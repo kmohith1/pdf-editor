@@ -86,6 +86,8 @@ input#fColor{width:36px;padding:2px;cursor:pointer}
 
 .blk{position:absolute;width:0;height:0;transform-origin:0 0}
 .blk-cover{position:absolute;cursor:text}
+.blk-mask{position:absolute;pointer-events:none}
+.blk:not(.on) .blk-mask{display:none}
 .blk-text{position:absolute;left:0;white-space:pre;outline:none;cursor:text;padding:0;margin:0;caret-color:#1c5bd0}
 .blk:not(.on) .blk-text{color:transparent !important}
 .blk:not(.on) .blk-cover{background:transparent !important}
@@ -286,6 +288,7 @@ async function renderPage(pg) {
   if (my !== pg.token) return;
   pg.task = null;
   if (!pg.extracted) {
+    try { pg.rules = await readPageRules(pg.page); } catch (e) { pg.rules = []; }
     try { await extract(pg); } catch (e) {}
     if (my !== pg.token) return;
     pg.extracted = true;
@@ -466,6 +469,104 @@ function sampleBlock(pg, b) {
   b.color = r.fg || ((r.bg[0] + r.bg[1] + r.bg[2]) / 3 < 110 ? [255, 255, 255] : [0, 0, 0]);
 }
 
+/* Keep vector rules outside the text-erasure mask. Coordinates stay in PDF
+   points so the preview and both export paths use exactly the same geometry. */
+async function readPageRules(page) {
+  const { OPS, Util } = pdfjsLib, op = await page.getOperatorList();
+  const rules = [], stack = [];
+  let matrix = [1, 0, 0, 1, 0, 0], lineWidth = 1;
+  let segments = [], rectangles = [], point = null, start = null;
+  const save = () => stack.push({ matrix: matrix.slice(), lineWidth });
+  const restore = () => { const s = stack.pop(); if (s) { matrix = s.matrix; lineWidth = s.lineWidth; } };
+  const at = (x, y) => Util.applyTransform([x, y], matrix);
+  const line = p => { if (point) segments.push([point, p]); point = p; };
+  const close = () => { if (point && start) line(start); };
+  const clear = () => { segments = []; rectangles = []; point = start = null; };
+  const stroke = () => {
+    for (const [a, b] of segments) {
+      const dx = b[0] - a[0], dy = b[1] - a[1], length = Math.hypot(dx, dy);
+      if (length < 8) continue;
+      const nx = -dy / length, ny = dx / length;
+      // Project the transformed pen onto the line normal (also handles scaling).
+      const half = Math.max(0.25, Math.abs(lineWidth) / 2 *
+        Math.hypot(matrix[0] * nx + matrix[1] * ny, matrix[2] * nx + matrix[3] * ny));
+      if (half > 2) continue;
+      const tx = dx / length * half, ty = dy / length * half;
+      rules.push([[a[0]-tx+nx*half,a[1]-ty+ny*half], [b[0]+tx+nx*half,b[1]+ty+ny*half],
+                  [b[0]+tx-nx*half,b[1]+ty-ny*half], [a[0]-tx-nx*half,a[1]-ty-ny*half]]);
+    }
+  };
+  const fill = () => {
+    for (const r of rectangles) {
+      const w = Math.hypot(r[1][0]-r[0][0], r[1][1]-r[0][1]);
+      const h = Math.hypot(r[3][0]-r[0][0], r[3][1]-r[0][1]);
+      if (Math.min(w,h) <= 4 && Math.max(w,h) >= 8) rules.push(r);
+    }
+  };
+  for (let i = 0; i < op.fnArray.length; i++) {
+    const fn = op.fnArray[i], args = op.argsArray[i];
+    if (fn === OPS.save) save();
+    else if (fn === OPS.restore) restore();
+    else if (fn === OPS.transform) matrix = Util.transform(matrix, args);
+    else if (fn === OPS.setLineWidth) lineWidth = args[0];
+    else if (fn === OPS.setGState) {
+      for (const [key, value] of args[0]) if (key === 'LW') lineWidth = value;
+    } else if (fn === OPS.paintFormXObjectBegin) {
+      save(); if (args[0]) matrix = Util.transform(matrix, args[0]);
+    } else if (fn === OPS.paintFormXObjectEnd) restore();
+    else if (fn === OPS.constructPath) {
+      const [ops, values] = args; let j = 0;
+      for (const cmd of ops) {
+        if (cmd === OPS.moveTo) { point = start = at(values[j++], values[j++]); }
+        else if (cmd === OPS.lineTo) line(at(values[j++], values[j++]));
+        else if (cmd === OPS.rectangle) {
+          const x = values[j++], y = values[j++], w = values[j++], h = values[j++];
+          const r = [at(x,y),at(x+w,y),at(x+w,y+h),at(x,y+h)]; rectangles.push(r);
+          point = start = r[0]; line(r[1]); line(r[2]); line(r[3]); close();
+        } else if (cmd === OPS.closePath) close();
+        else if (cmd === OPS.curveTo) { j += 4; point = at(values[j++], values[j++]); }
+        else if (cmd === OPS.curveTo2 || cmd === OPS.curveTo3) { j += 2; point = at(values[j++], values[j++]); }
+      }
+    } else if (fn === OPS.closePath) close();
+    else if ([OPS.stroke, OPS.closeStroke, OPS.fill, OPS.eoFill, OPS.fillStroke,
+              OPS.eoFillStroke, OPS.closeFillStroke, OPS.closeEOFillStroke, OPS.endPath].includes(fn)) {
+      if ([OPS.closeStroke, OPS.closeFillStroke, OPS.closeEOFillStroke].includes(fn)) close();
+      if ([OPS.fill, OPS.eoFill, OPS.fillStroke, OPS.eoFillStroke, OPS.closeFillStroke, OPS.closeEOFillStroke].includes(fn)) fill();
+      if ([OPS.stroke, OPS.closeStroke, OPS.fillStroke, OPS.eoFillStroke, OPS.closeFillStroke, OPS.closeEOFillStroke].includes(fn)) stroke();
+      clear();
+    }
+  }
+  return rules;
+}
+function originalCoverBox(b) {
+  const size = b.o ? b.o.size : b.size, pad = 0.6;
+  return { x: -pad, y: -b.descent * size - pad,
+    w: b.width + 2 * pad, h: (b.ascent + b.descent) * size + 2 * pad };
+}
+function textCoverRects(pg, b) {
+  if (b.coverRects) return b.coverRects;
+  let rects = [originalCoverBox(b)];
+  // Include the antialiased edge at the fallback renderer's two pixels per point.
+  const cs = Math.cos(b.angle), sn = Math.sin(b.angle), guard = 0.5;
+  for (const rule of pg.rules || []) {
+    const p = rule.map(([x,y]) => [(x-b.x)*cs+(y-b.y)*sn, -(x-b.x)*sn+(y-b.y)*cs]);
+    // Only exclude rules aligned with this text block; diagonal artwork is not a rule.
+    if (!p.every((a,i) => { const z = p[(i+1)%p.length]; return Math.abs(a[0]-z[0]) < 0.01 || Math.abs(a[1]-z[1]) < 0.01; })) continue;
+    const x0 = Math.min(...p.map(v=>v[0]))-guard, x1 = Math.max(...p.map(v=>v[0]))+guard;
+    const y0 = Math.min(...p.map(v=>v[1]))-guard, y1 = Math.max(...p.map(v=>v[1]))+guard;
+    rects = rects.flatMap(r => {
+      const l = Math.max(r.x,x0), rr = Math.min(r.x+r.w,x1);
+      const bot = Math.max(r.y,y0), top = Math.min(r.y+r.h,y1);
+      if (l >= rr || bot >= top) return [r];
+      return [{x:r.x,y:r.y,w:r.w,h:bot-r.y}, {x:r.x,y:top,w:r.w,h:r.y+r.h-top},
+        {x:r.x,y:bot,w:l-r.x,h:top-bot}, {x:rr,y:bot,w:r.x+r.w-rr,h:top-bot}]
+        .filter(v=>v.w>0.001 && v.h>0.001);
+    });
+  }
+  b.coverRects = rects;
+  return rects;
+}
+
 /* ---------- drawing the editable overlay ---------- */
 function drawBlock(pg, b) {
   if (b.el) b.el.remove();
@@ -484,11 +585,16 @@ function drawBlock(pg, b) {
     const fa = m.fontBoundingBoxAscent || px * 0.9, fd = m.fontBoundingBoxDescent || px * 0.22;
     el = document.createElement("div"); el.className = "blk " + (b.kind === "new" ? "new" : "orig");
     el.style.cssText = "left:" + p[0] + "px;top:" + p[1] + "px;transform:rotate(" + phi + "rad)";
-    const pad = 0.6 * s;
     const cov = document.createElement("div"); cov.className = "blk-cover";
     if (b.kind === "orig") {
-      cov.style.cssText = "left:" + (-pad) + "px;top:" + (-b.ascent * b.size * s - pad) + "px;width:" + (b.width * s + 2 * pad) +
-        "px;height:" + ((b.ascent + b.descent) * b.size * s + 2 * pad) + "px";
+      const box = originalCoverBox(b);
+      cov.style.cssText = "left:" + box.x*s + "px;top:" + (-(box.y+box.h)*s) + "px;width:" + box.w*s + "px;height:" + box.h*s + "px";
+      b.maskEls = textCoverRects(pg, b).map(r => {
+        const mask = document.createElement("div"); mask.className = "blk-mask";
+        mask.style.cssText = "left:" + (r.x-box.x)*s + "px;top:" + (box.y+box.h-r.y-r.h)*s +
+          "px;width:" + r.w*s + "px;height:" + r.h*s + "px";
+        cov.append(mask); return mask;
+      });
       cov.addEventListener("pointerdown", e => { if (S.tool !== "edit") return; e.stopPropagation(); e.preventDefault(); select(pg, b); focusEnd(b.txtEl); });
     } else cov.style.display = "none";
     const txt = document.createElement("div"); txt.className = "blk-text";
@@ -524,7 +630,7 @@ function applyState(b) {
   const on = sel || ch; el.classList.toggle("on", on);
   if (on) {
     b.txtEl.style.color = css(b.color || [0, 0, 0]);
-    if (b.kind === "orig") b.covEl.style.background = css(b.bg || [255, 255, 255]);
+    if (b.kind === "orig") for (const mask of b.maskEls || []) mask.style.background = css(b.bg || [255, 255, 255]);
   }
 }
 function focusEnd(el) {
@@ -700,9 +806,10 @@ async function buildPdf() {
     for (const b of list) {
       if (b.kind === "cover") page.drawRectangle({ x: b.x, y: b.y, width: b.w, height: b.h, color: col(b.bg) });
       else if (b.kind === "orig") {
-        const pad = 0.6, cs = Math.cos(b.angle), sn = Math.sin(b.angle), D = b.descent * b.size + pad;
-        page.drawRectangle({ x: b.x - cs * pad + sn * D, y: b.y - sn * pad - cs * D, width: b.width + 2 * pad,
-          height: (b.ascent + b.descent) * b.size + 2 * pad, rotate: degrees(b.angle * 180 / Math.PI), color: col(b.bg || [255, 255, 255]) });
+        const cs = Math.cos(b.angle), sn = Math.sin(b.angle);
+        for (const r of textCoverRects(pg, b)) page.drawRectangle({
+          x: b.x + cs*r.x - sn*r.y, y: b.y + sn*r.x + cs*r.y, width: r.w, height: r.h,
+          rotate: degrees(b.angle * 180 / Math.PI), color: col(b.bg || [255, 255, 255]) });
       }
     }
     for (const b of list) {
@@ -745,8 +852,9 @@ async function buildFlat() {
       c.fillStyle = css(b.bg || [255, 255, 255]);
       if (b.kind === "cover") c.fillRect(b.x, b.y, b.w, b.h);
       else if (b.kind === "orig") {
-        const pad = 0.6; c.save(); c.translate(b.x, b.y); c.rotate(b.angle);
-        c.fillRect(-pad, -b.descent * b.size - pad, b.width + 2 * pad, (b.ascent + b.descent) * b.size + 2 * pad); c.restore();
+        c.save(); c.translate(b.x, b.y); c.rotate(b.angle);
+        for (const r of textCoverRects(pg, b)) c.fillRect(r.x, r.y, r.w, r.h);
+        c.restore();
       }
     }
     for (const b of list) {
@@ -755,8 +863,8 @@ async function buildFlat() {
       c.font = cssFont(b, b.size * fitOf(b)); c.fillStyle = css(b.color || [0, 0, 0]); c.textBaseline = "alphabetic";
       c.fillText(b.text, alignOff(b, c.measureText(b.text).width), 0); c.restore();
     }
-    const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.92));
-    const img = await out.embedJpg(await blob.arrayBuffer());
+    const blob = await new Promise(r => cv.toBlob(r, "image/png"));
+    const img = await out.embedPng(await blob.arrayBuffer());
     out.addPage([v1.width, v1.height]).drawImage(img, { x: 0, y: 0, width: v1.width, height: v1.height });
   }
   return await out.save({ useObjectStreams: false });
