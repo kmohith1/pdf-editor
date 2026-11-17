@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF Text Editor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* Layout idea: a proofreader's desk. One slim tool rail on top, the sheets lie on a cool grey desk below.
+   Blue pencil marks what you can touch, amber marks what you changed. */
+:root{
+  --desk:#dde2e8;
+  --panel:#f6f8fa;
+  --ink:#17212c;
+  --muted:#586675;
+  --line:#c3cbd5;
+  --accent:#1c5bd0;
+  --accent-ink:#ffffff;
+  --accent-tint:rgba(28,91,208,.14);
+  --mark:#d98e0b;
+  --sheet-shadow:0 1px 2px rgba(23,33,44,.18),0 8px 24px rgba(23,33,44,.12);
+  --font-display:"Bricolage Grotesque","Trebuchet MS",sans-serif;
+  --font-body:"IBM Plex Sans","Segoe UI",system-ui,sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --desk:#12161b; --panel:#1c232b; --ink:#e7ecf2; --muted:#98a5b3; --line:#323c48;
+    --accent:#77a6ff; --accent-ink:#0c1420; --accent-tint:rgba(119,166,255,.2); --mark:#f0b23e;
+    --sheet-shadow:0 1px 2px rgba(0,0,0,.5),0 10px 28px rgba(0,0,0,.45);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --desk:#12161b; --panel:#1c232b; --ink:#e7ecf2; --muted:#98a5b3; --line:#323c48;
+  --accent:#77a6ff; --accent-ink:#0c1420; --accent-tint:rgba(119,166,255,.2); --mark:#f0b23e;
+  --sheet-shadow:0 1px 2px rgba(0,0,0,.5),0 10px 28px rgba(0,0,0,.45);
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{display:flex;flex-direction:column;background:var(--desk);color:var(--ink);font:14px/1.4 var(--font-body)}
+button,select,input{font:inherit;color:inherit}
+
+.bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+.brand{font:700 18px/1 var(--font-display);letter-spacing:-.01em;margin-right:4px;white-space:nowrap}
+.brand i{font-style:normal;color:var(--accent)}
+.group{display:flex;align-items:center;gap:6px}
+.spacer{flex:1 1 0;min-width:0}
+.btn{height:32px;padding:0 12px;border:1px solid var(--line);border-radius:6px;background:transparent;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:6px}
+.btn:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.btn:disabled{opacity:.45;cursor:default}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.btn.primary:hover:not(:disabled){color:var(--accent-ink);filter:brightness(1.08)}
+.btn.sq{width:32px;padding:0;justify-content:center}
+.btn[aria-pressed="true"]{background:var(--accent-tint);border-color:var(--accent);color:var(--accent)}
+.seg{display:flex}
+.seg .btn{border-radius:0;margin-left:-1px}
+.seg .btn:first-child{border-radius:6px 0 0 6px;margin-left:0}
+.seg .btn:last-child{border-radius:0 6px 6px 0}
+.seg .btn[aria-pressed="true"]{position:relative;z-index:1}
+select.ctl,input.ctl{height:32px;border:1px solid var(--line);border-radius:6px;background:transparent;padding:0 8px}
+select.ctl option{color:#17212c;background:#fff}
+input#fSize{width:64px;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+input#fColor{width:36px;padding:2px;cursor:pointer}
+.ctl:disabled{opacity:.45}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.zoom{font:500 12px/1 var(--font-mono);font-variant-numeric:tabular-nums;min-width:44px;text-align:center;color:var(--muted)}
+.count{font:500 12px/1 var(--font-mono);color:var(--muted);white-space:nowrap;display:inline-flex;align-items:center;gap:6px}
+.count::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--line)}
+.count.has{color:var(--ink)}
+.count.has::before{background:var(--mark)}
+#file{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+
+#desk{flex:1 1 0;min-height:0;overflow:auto;position:relative}
+#desk.drop::after{content:"Drop the PDF to open it";position:fixed;inset:auto 16px 16px 16px;padding:14px;border:2px dashed var(--accent);border-radius:8px;background:var(--panel);text-align:center;font-weight:600;color:var(--accent);z-index:5}
+.tip{margin:14px auto 0;padding:0 16px;max-width:820px;color:var(--muted);font-size:13px;text-wrap:balance;text-align:center}
+.tip b{color:var(--ink);font-weight:600}
+#pages{display:flex;flex-direction:column;align-items:center;gap:8px;width:max-content;min-width:100%;padding:14px 16px 40px}
+.sheet{display:flex;flex-direction:column;align-items:center;gap:6px}
+.paper{position:relative;background:#fff;box-shadow:var(--sheet-shadow)}
+.paper canvas{display:block;width:100%;height:100%}
+.layer{position:absolute;inset:0;overflow:hidden}
+.note{margin:0 0 10px;font:400 11px/1.3 var(--font-mono);color:var(--muted);text-align:center;max-width:90vw}
+
+.blk{position:absolute;width:0;height:0;transform-origin:0 0}
+.blk-cover{position:absolute;cursor:text}
+.blk-text{position:absolute;left:0;white-space:pre;outline:none;cursor:text;padding:0;margin:0;caret-color:#1c5bd0}
+.blk:not(.on) .blk-text{color:transparent !important}
+.blk:not(.on) .blk-cover{background:transparent !important}
+.blk:not(.on):hover .blk-cover{background:rgba(28,91,208,.13) !important;outline:1px solid rgba(28,91,208,.75)}
+.blk.changed .blk-cover{box-shadow:0 2px 0 0 #d98e0b}
+.blk.new.changed .blk-text{box-shadow:0 2px 0 0 #d98e0b}
+.blk.sel .blk-cover{outline:1.5px solid #1c5bd0;box-shadow:none}
+.blk.new.sel .blk-text{outline:1.5px dashed #1c5bd0;outline-offset:2px;box-shadow:none;min-width:12px}
+.grip{position:absolute;display:none;width:16px;height:16px;border-radius:3px;background:#1c5bd0;cursor:grab;touch-action:none}
+.grip::before{content:"";position:absolute;inset:4px;background:radial-gradient(#fff 1px,transparent 1.4px) 0 0/4px 4px}
+.blk.new.sel .grip{display:block}
+.cov{position:absolute;cursor:move;touch-action:none}
+.cov.changed{box-shadow:0 0 0 1px rgba(217,142,11,.7)}
+.cov.sel{outline:1.5px solid #1c5bd0;box-shadow:none}
+.rubber{position:absolute;border:1.5px dashed #1c5bd0;background:rgba(28,91,208,.12);pointer-events:none}
+#pages[data-tool="add"] .layer{cursor:text}
+#pages[data-tool="cover"] .layer{cursor:crosshair;touch-action:none}
+#pages[data-tool="add"] .blk,#pages[data-tool="add"] .cov,
+#pages[data-tool="cover"] .blk,#pages[data-tool="cover"] .cov{pointer-events:none}
+
+#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);max-width:min(560px,calc(100% - 32px));padding:10px 14px;border-radius:8px;background:var(--ink);color:var(--desk);font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:opacity .2s;z-index:10}
+#toast.show{opacity:1}
+@media (prefers-reduced-motion: reduce){#toast{transition:none}}
+@media (max-width:520px){.brand{width:100%}.spacer{display:none}}
+</style>
+</head>
+<body>
+<header class="bar">
+  <div class="brand">PDF <i>Text</i> Editor</div>
+  <div class="group">
+    <button class="btn" id="openBtn" type="button">Open PDF</button>
+    <input type="file" id="file" accept="application/pdf,.pdf" tabindex="-1" aria-hidden="true">
+  </div>
+  <div class="group seg" role="group" aria-label="Tool">
+    <button class="btn" id="toolEdit" type="button" aria-pressed="true" title="Click a line on the page to retype it">Edit text</button>
+    <button class="btn" id="toolAdd" type="button" aria-pressed="false" title="Click an empty spot to type new text">Add text</button>
+    <button class="btn" id="toolCover" type="button" aria-pressed="false" title="Drag a box to cover part of the page">Cover</button>
+  </div>
+  <div class="group" role="group" aria-label="Text format">
+    <select class="ctl" id="fFamily" aria-label="Font" disabled>
+      <option value="sans">Helvetica</option>
+      <option value="serif">Times</option>
+      <option value="mono">Courier</option>
+    </select>
+    <input class="ctl" id="fSize" type="number" min="4" max="200" step="0.5" aria-label="Font size in points" disabled>
+    <button class="btn sq" id="fBold" type="button" aria-pressed="false" aria-label="Bold" disabled><b>B</b></button>
+    <button class="btn sq" id="fItalic" type="button" aria-pressed="false" aria-label="Italic" disabled><i style="font-family:Georgia,serif">I</i></button>
+    <div class="seg" role="group" aria-label="Alignment">
+      <button class="btn sq" id="aLeft" type="button" aria-pressed="false" aria-label="Align left" title="Keep the left edge fixed" disabled><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><path d="M0 1h14M0 6h8M0 11h11" stroke="currentColor" stroke-width="1.6"/></svg></button>
+      <button class="btn sq" id="aCenter" type="button" aria-pressed="false" aria-label="Align centre" title="Keep the middle fixed" disabled><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><path d="M0 1h14M3 6h8M1.5 11h11" stroke="currentColor" stroke-width="1.6"/></svg></button>
+      <button class="btn sq" id="aRight" type="button" aria-pressed="false" aria-label="Align right" title="Keep the right edge fixed" disabled><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><path d="M0 1h14M6 6h8M3 11h11" stroke="currentColor" stroke-width="1.6"/></svg></button>
+    </div>
+    <input class="ctl" id="fColor" type="color" value="#000000" aria-label="Colour" disabled>
+    <button class="btn" id="fReset" type="button" disabled>Undo this edit</button>
+  </div>
+  <div class="spacer"></div>
+  <div class="group">
+    <button class="btn sq" id="zOut" type="button" aria-label="Zoom out">&minus;</button>
+    <span class="zoom" id="zVal">100%</span>
+    <button class="btn sq" id="zIn" type="button" aria-label="Zoom in">+</button>
+  </div>
+  <span class="count" id="count">No changes yet</span>
+  <button class="btn primary" id="saveBtn" type="button">Download PDF</button>
+</header>
+
+<main id="desk">
+  <p class="tip" id="tip"></p>
+  <div id="pages" data-tool="edit"></div>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const desk = $("desk"), pagesEl = $("pages");
+const libsOk = !!(window.pdfjsLib && window.PDFLib);
+if (libsOk) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const S = { bytes: null, name: "", doc: null, pages: [], scale: 1, tool: "edit", sel: null, sample: false, lastSize: 12 };
+let uid = 0, toastTimer = 0;
+
+const CSSFAM = {
+  sans: 'Arial, Helvetica, "Liberation Sans", sans-serif',
+  serif: '"Times New Roman", Times, "Liberation Serif", serif',
+  mono: '"Courier New", Courier, "Liberation Mono", monospace'
+};
+const STD = {
+  sans: ["Helvetica", "Helvetica-Bold", "Helvetica-Oblique", "Helvetica-BoldOblique"],
+  serif: ["Times-Roman", "Times-Bold", "Times-Italic", "Times-BoldItalic"],
+  mono: ["Courier", "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique"]
+};
+
+function toast(msg, ms) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), ms || 4200);
+}
+const css = c => "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
+const toHex = c => "#" + c.map(v => Math.round(v).toString(16).padStart(2, "0")).join("");
+const fromHex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+
+/* ---------- measuring ---------- */
+const mctx = document.createElement("canvas").getContext("2d");
+function cssFont(b, px) { return (b.italic ? "italic " : "") + (b.bold ? "bold " : "") + px + "px " + CSSFAM[b.family]; }
+function measure(b, text, px) { mctx.font = cssFont(b, px); return mctx.measureText(text); }
+function fitOf(b) {
+  if (b.kind !== "orig" || b.noFit) return 1;
+  const w = measure(b, b.origText, 100).width * b.size / 100;
+  return w ? clamp(b.width / w, 0.8, 1.25) : 1;
+}
+function changed(b) { return b.kind !== "orig" || b.text !== b.origText || !!b.styled; }
+
+/* ---------- geometry ---------- */
+const viewOf = pg => pg.page.getViewport({ scale: S.scale });
+function viewAngle(vp, th) {
+  const m = vp.transform, cs = Math.cos(th), sn = Math.sin(th);
+  return Math.atan2(m[1] * cs + m[3] * sn, m[0] * cs + m[2] * sn);
+}
+
+/* ---------- opening ---------- */
+async function openBytes(bytes, name, sample) {
+  let doc;
+  try { doc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise; }
+  catch (e) {
+    toast(e && e.name === "PasswordException"
+      ? "This PDF is password-protected. Remove the password, then open it again."
+      : "That file could not be read as a PDF. Try another file.");
+    return false;
+  }
+  const old = S.doc;
+  for (const pg of S.pages) { pg.token++; if (pg.task) { try { pg.task.cancel(); } catch (e) {} } }
+  S.bytes = bytes; S.name = name; S.doc = doc; S.sel = null; S.sample = !!sample; S.pages = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    S.pages.push({ i: i - 1, page: await doc.getPage(i), blocks: [], extracted: false, rendered: false, token: 0, task: null });
+  }
+  const w = S.pages[0].page.getViewport({ scale: 1 }).width;
+  S.scale = Math.round(clamp((desk.clientWidth - 32) / w, 0.4, 1.5) * 100) / 100;
+  buildPages();
+  syncBar(); updateCount();
+  $("tip").innerHTML = sample
+    ? "<b>This is an example file.</b> Click any line to retype it, or open your own PDF. Files stay in your browser and are not uploaded."
+    : "<b>" + escapeHtml(name) + "</b> &middot; click any line to retype it. Press Enter when you finish a line.";
+  desk.scrollTop = 0;
+  if (old) { try { old.destroy(); } catch (e) {} }
+  return true;
+}
+function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+const paperMap = new Map();
+const io = new IntersectionObserver(entries => {
+  for (const en of entries) {
+    const pg = paperMap.get(en.target);
+    if (pg && en.isIntersecting && !pg.rendered && !pg.busy) renderPage(pg);
+  }
+}, { root: desk, rootMargin: "700px 0px" });
+
+function buildPages() {
+  io.disconnect(); paperMap.clear(); pagesEl.textContent = "";
+  for (const pg of S.pages) {
+    const sheet = document.createElement("section"); sheet.className = "sheet";
+    const paper = document.createElement("div"); paper.className = "paper";
+    const canvas = document.createElement("canvas");
+    const layer = document.createElement("div"); layer.className = "layer";
+    const note = document.createElement("p"); note.className = "note";
+    note.textContent = "Page " + (pg.i + 1) + " of " + S.pages.length;
+    paper.append(canvas, layer); sheet.append(paper, note); pagesEl.append(sheet);
+    Object.assign(pg, { paper, canvas, layer, note });
+    paperMap.set(paper, pg);
+    layer.addEventListener("pointerdown", e => onLayerDown(e, pg));
+  }
+  layoutPages();
+}
+function layoutPages() {
+  $("zVal").textContent = Math.round(S.scale * 100) + "%";
+  for (const pg of S.pages) {
+    const vp = viewOf(pg);
+    pg.paper.style.width = vp.width + "px"; pg.paper.style.height = vp.height + "px";
+    pg.token++; pg.rendered = false; pg.busy = false;
+    pg.layer.textContent = ""; for (const b of pg.blocks) b.el = null;
+    io.unobserve(pg.paper); io.observe(pg.paper);
+  }
+}
+async function renderPage(pg) {
+  const my = ++pg.token; pg.busy = true;
+  if (pg.task) { try { pg.task.cancel(); await pg.task.promise; } catch (e) {} }
+  if (my !== pg.token) return;
+  const vp = viewOf(pg);
+  let k = Math.min(window.devicePixelRatio || 1, 2);
+  if (vp.width * vp.height * k * k > 14e6) k = Math.sqrt(14e6 / (vp.width * vp.height));
+  const cv = pg.canvas;
+  cv.width = Math.max(1, Math.round(vp.width * k)); cv.height = Math.max(1, Math.round(vp.height * k));
+  pg.k = cv.width / vp.width;
+  const ctx = pg.ctx = cv.getContext("2d", { willReadFrequently: true });
+  const task = pg.task = pg.page.render({ canvasContext: ctx, viewport: pg.page.getViewport({ scale: S.scale * pg.k }) });
+  try { await task.promise; } catch (e) { if (my === pg.token) pg.busy = false; return; }
+  if (my !== pg.token) return;
+  pg.task = null;
+  if (!pg.extracted) {
+    try { await extract(pg); } catch (e) {}
+    if (my !== pg.token) return;
+    pg.extracted = true;
+  }
+  pg.rendered = true; pg.busy = false;
+  pg.layer.textContent = "";
+  for (const b of pg.blocks) drawBlock(pg, b);
+  pg.note.textContent = "Page " + (pg.i + 1) + " of " + S.pages.length +
+    (pg.blocks.some(b => b.kind === "orig") ? "" : " · no editable text found here (it may be a scan). Use Add text or Cover.");
+}
+
+/* ---------- reading the text that is already in the PDF ---------- */
+function fontStyle(pg, fontName, st) {
+  let name = "", obj = null;
+  try { if (pg.page.commonObjs.has(fontName)) obj = pg.page.commonObjs.get(fontName); } catch (e) {}
+  if (obj && obj.name) name = String(obj.name).replace(/^[A-Z]{6}\+/, "");
+  const fam = (st && st.fontFamily) || "";
+  let family = "sans";
+  if (/courier|mono|consol|menlo/i.test(name) || /monospace/i.test(fam)) family = "mono";
+  else if (/arial|helvet|calibri|verdana|tahoma|segoe|roboto|inter|sans|lato|gothic|trebuchet|aptos/i.test(name)) family = "sans";
+  else if (/times|georgia|garamond|cambria|roman|serif|minion|palatino|book|century|baskerville/i.test(name)) family = "serif";
+  else if (/serif/i.test(fam) && !/sans/i.test(fam)) family = "serif";
+  const bold = !!(obj && (obj.bold || obj.black)) || /bold|black|heavy|semibold|demi/i.test(name);
+  const italic = !!(obj && obj.italic) || /italic|oblique/i.test(name);
+  const asc = clamp((st && +st.ascent) || 0.88, 0.72, 0.93);
+  const desc = clamp(Math.abs((st && +st.descent) || 0.22), 0.18, 0.3);
+  return { family, bold, italic, asc, desc, key: family + (bold ? "b" : "") + (italic ? "i" : "") };
+}
+/* A line that shares its right edge (but not its left) with other lines sits in a right-aligned column, and so on. */
+function autoAlign(list) {
+  for (const b of list) {
+    const cs = Math.cos(b.angle), sn = Math.sin(b.angle), a0 = b.x * cs + b.y * sn, a1 = a0 + b.width, tol = Math.max(1, b.size * 0.12);
+    let L = 0, R = 0, C = 0;
+    for (const o of list) {
+      if (o === b || Math.abs(o.angle - b.angle) > 0.02) continue;
+      const p0 = o.x * cs + o.y * sn, p1 = p0 + o.width;
+      const dl = Math.abs(p0 - a0), dr = Math.abs(p1 - a1), dc = Math.abs((p0 + p1) / 2 - (a0 + a1) / 2);
+      if (dl < tol && dr < tol) continue;
+      if (dl < tol) L++; else if (dr < tol) R++; else if (dc < tol) C++;
+    }
+    b.align = R >= 1 && R > L ? "right" : (C >= 2 && C > L && C > R ? "center" : "left");
+  }
+}
+const alignOff = (b, w) => b.align === "right" ? b.width - w : b.align === "center" ? (b.width - w) / 2 : 0;
+async function extract(pg) {
+  const tc = await pg.page.getTextContent();
+  const out = []; let cur = null;
+  /* A single run that holds two table cells ("45,820.93   TOTAL") is cut at each wide gap. */
+  const items = [];
+  for (const it of tc.items) {
+    if (!it.str) continue;
+    if (it.width > 0 && /\S\s+\S/.test(it.str)) {
+      const fs = fontStyle(pg, it.fontName, tc.styles[it.fontName]);
+      const full = measure(fs, it.str, 100).width || 1, n = Math.hypot(it.transform[0], it.transform[1]) || 1;
+      const cs = it.transform[0] / n, sn = it.transform[1] / n, re = /\s+/g, parts = [];
+      const ang0 = Math.atan2(it.transform[1], it.transform[0]), sz = Math.hypot(it.transform[2], it.transform[3]) || n;
+      const at = i => measure(fs, it.str.slice(0, i), 100).width / full * it.width;
+      let last = 0, m;
+      while ((m = re.exec(it.str))) {
+        if (m.index === 0 || m.index + m[0].length >= it.str.length) continue;
+        let cut = m[0].length >= 2;
+        if (!cut) { const g0 = at(m.index), g1 = at(m.index + m[0].length); cut = ruleInGap(pg, it.transform[4] + cs * g0, it.transform[5] + sn * g0, g1 - g0, ang0, sz); }
+        if (cut) { parts.push([last, m.index]); last = m.index + m[0].length; }
+      }
+      if (!parts.length) { items.push(it); continue; }
+      parts.push([last, it.str.length]);
+      let first = true;
+      for (const [s0, s1] of parts) {
+        const str = it.str.slice(s0, s1); if (!str.trim()) continue;
+        const off = measure(fs, it.str.slice(0, s0), 100).width / full * it.width;
+        const tr = it.transform.slice(); tr[4] += cs * off; tr[5] += sn * off;
+        items.push({ str, transform: tr, width: measure(fs, str, 100).width / full * it.width, fontName: it.fontName, brk: !first });
+        first = false;
+      }
+    } else items.push(it);
+  }
+  for (const it of items) {
+    const [a, b, c, d, e, f] = it.transform;
+    const size = Math.hypot(c, d) || Math.hypot(a, b);
+    if (!size) continue;
+    const ang = Math.atan2(b, a), blank = !it.str.trim();
+    const st = fontStyle(pg, it.fontName, tc.styles[it.fontName]);
+    if (cur) {
+      const dx = e - cur.x, dy = f - cur.y, cs = Math.cos(cur.angle), sn = Math.sin(cur.angle);
+      const along = dx * cs + dy * sn, perp = -dx * sn + dy * cs, gap = along - cur.width;
+      const same = !it.brk && Math.abs(ang - cur.angle) < 0.02 && Math.abs(perp) < 0.25 * cur.size &&
+        Math.abs(size - cur.size) < 0.12 * cur.size && gap > -0.6 * cur.size && gap < 0.8 * cur.size &&
+        (blank || st.key === cur.key) &&
+        !(!blank && gap > 0.3 && ruleInGap(pg, cur.x + cs * cur.width, cur.y + sn * cur.width, gap, cur.angle, cur.size));
+      if (same) {
+        if (blank) { if (!/\s$/.test(cur.text)) cur.text += " "; }
+        else {
+          if (gap > 0.18 * cur.size && !/\s$/.test(cur.text) && !/^\s/.test(it.str)) cur.text += " ";
+          cur.text += it.str; cur.width = along + it.width;
+        }
+        continue;
+      }
+    }
+    if (blank) { cur = null; continue; }
+    cur = { id: ++uid, kind: "orig", x: e, y: f, angle: ang, size, width: it.width, text: it.str,
+            family: st.family, bold: st.bold, italic: st.italic, key: st.key, ascent: st.asc, descent: st.desc,
+            color: null, bg: null };
+    out.push(cur);
+  }
+  for (const b of out) {
+    b.text = b.text.replace(/ /g, " ").replace(/\s+$/, ""); b.origText = b.text;
+  }
+  autoAlign(out);
+  for (const b of out) b.o = { family: b.family, bold: b.bold, italic: b.italic, size: b.size, align: b.align };
+  const added = pg.blocks.filter(b => b.kind !== "orig");
+  pg.blocks = out.filter(b => b.text && b.width > 0).concat(added);
+}
+
+/* ---------- colour matching from the rendered page ---------- */
+function sampleCanvas(pg, x0, y0, x1, y1) {
+  const cv = pg.canvas;
+  x0 = clamp(Math.floor(x0), 0, cv.width - 1); y0 = clamp(Math.floor(y0), 0, cv.height - 1);
+  x1 = clamp(Math.ceil(x1), x0 + 1, cv.width); y1 = clamp(Math.ceil(y1), y0 + 1, cv.height);
+  const w = x1 - x0, h = y1 - y0;
+  let d; try { d = pg.ctx.getImageData(x0, y0, w, h).data; } catch (e) { return { bg: [255, 255, 255], fg: null }; }
+  const step = Math.max(1, Math.floor(Math.sqrt(w * h / 30000)));
+  const buckets = new Map();
+  for (let y = 0; y < h; y += step) for (let x = 0; x < w; x += step) {
+    const i = (y * w + x) * 4, key = (d[i] >> 3) << 10 | (d[i + 1] >> 3) << 5 | (d[i + 2] >> 3);
+    let q = buckets.get(key); if (!q) buckets.set(key, q = [0, 0, 0, 0]);
+    q[0]++; q[1] += d[i]; q[2] += d[i + 1]; q[3] += d[i + 2];
+  }
+  let top = null; for (const q of buckets.values()) if (!top || q[0] > top[0]) top = q;
+  const bg = [top[1] / top[0], top[2] / top[0], top[3] / top[0]].map(Math.round);
+  const dist = q => Math.hypot(q[1] / q[0] - bg[0], q[2] / q[0] - bg[1], q[3] / q[0] - bg[2]);
+  let maxd = 0; for (const q of buckets.values()) maxd = Math.max(maxd, dist(q));
+  let fg = null;
+  if (maxd > 60) {
+    const s = [0, 0, 0, 0];
+    for (const q of buckets.values()) if (dist(q) >= 0.82 * maxd) { s[0] += q[0]; s[1] += q[1]; s[2] += q[2]; s[3] += q[3]; }
+    fg = [s[1] / s[0], s[2] / s[0], s[3] / s[0]].map(Math.round);
+  }
+  return { bg, fg };
+}
+/* True when a table border crosses the space between two pieces of text on the rendered page. */
+function ruleInGap(pg, x, y, len, ang, size) {
+  if (!pg.ctx || !(len > 0)) return false;
+  const vp = viewOf(pg), phi = viewAngle(vp, ang), horiz = Math.abs(Math.sin(phi)) < 0.1, vert = Math.abs(Math.cos(phi)) < 0.1;
+  if (!horiz && !vert) return false;
+  const cs = Math.cos(ang), sn = Math.sin(ang), box = (l0, l1) => {
+    const xs = [], ys = [];
+    for (const [l, u] of [[l0, -0.15 * size], [l1, -0.15 * size], [l1, 0.7 * size], [l0, 0.7 * size]]) {
+      const q = vp.convertToViewportPoint(x + cs * l - sn * u, y + sn * l + cs * u); xs.push(q[0] * pg.k); ys.push(q[1] * pg.k);
+    }
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  };
+  const wide = box(-1.5 * size, len + 1.5 * size), bg = sampleCanvas(pg, wide[0], wide[1], wide[2], wide[3]).bg;
+  const g = box(0, len), cv = pg.canvas;
+  const x0 = clamp(Math.floor(g[0]), 0, cv.width - 1), y0 = clamp(Math.floor(g[1]), 0, cv.height - 1);
+  const w = clamp(Math.ceil(g[2]), x0 + 1, cv.width) - x0, h = clamp(Math.ceil(g[3]), y0 + 1, cv.height) - y0;
+  if ((horiz ? h : w) < 4) return false;
+  let d; try { d = pg.ctx.getImageData(x0, y0, w, h).data; } catch (e) { return false; }
+  const n = horiz ? w : h, m = horiz ? h : w;
+  for (let i = 0; i < n; i++) {
+    let hit = 0;
+    for (let j = 0; j < m; j++) {
+      const k = ((horiz ? j : i) * w + (horiz ? i : j)) * 4;
+      if (Math.abs(d[k] - bg[0]) + Math.abs(d[k + 1] - bg[1]) + Math.abs(d[k + 2] - bg[2]) > 90) hit++;
+    }
+    if (hit >= 0.9 * m) return true;
+  }
+  return false;
+}
+function sampleBlock(pg, b) {
+  const vp = viewOf(pg), cs = Math.cos(b.angle), sn = Math.sin(b.angle), ux = -sn, uy = cs;
+  const A = b.ascent * b.size, D = b.descent * b.size, xs = [], ys = [];
+  for (const [l, u] of [[0, -D], [b.width, -D], [b.width, A], [0, A]]) {
+    const p = vp.convertToViewportPoint(b.x + cs * l + ux * u, b.y + sn * l + uy * u);
+    xs.push(p[0] * pg.k); ys.push(p[1] * pg.k);
+  }
+  const r = sampleCanvas(pg, Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys));
+  b.bg = r.bg;
+  b.color = r.fg || ((r.bg[0] + r.bg[1] + r.bg[2]) / 3 < 110 ? [255, 255, 255] : [0, 0, 0]);
+}
+
+/* ---------- drawing the editable overlay ---------- */
+function drawBlock(pg, b) {
+  if (b.el) b.el.remove();
+  if (!pg.rendered) { b.el = null; return; }
+  const vp = viewOf(pg), s = S.scale;
+  let el;
+  if (b.kind === "cover") {
+    const p1 = vp.convertToViewportPoint(b.x, b.y), p2 = vp.convertToViewportPoint(b.x + b.w, b.y + b.h);
+    el = document.createElement("div"); el.className = "cov";
+    el.style.cssText = "left:" + Math.min(p1[0], p2[0]) + "px;top:" + Math.min(p1[1], p2[1]) + "px;width:" +
+      Math.abs(p2[0] - p1[0]) + "px;height:" + Math.abs(p2[1] - p1[1]) + "px;background:" + css(b.bg);
+    el.addEventListener("pointerdown", e => { if (S.tool !== "edit") return; e.stopPropagation(); e.preventDefault(); select(pg, b); startDrag(e, pg, b, el); });
+  } else {
+    const p = vp.convertToViewportPoint(b.x, b.y), phi = viewAngle(vp, b.angle);
+    const px = b.size * fitOf(b) * s, m = measure(b, "Hg", px);
+    const fa = m.fontBoundingBoxAscent || px * 0.9, fd = m.fontBoundingBoxDescent || px * 0.22;
+    el = document.createElement("div"); el.className = "blk " + (b.kind === "new" ? "new" : "orig");
+    el.style.cssText = "left:" + p[0] + "px;top:" + p[1] + "px;transform:rotate(" + phi + "rad)";
+    const pad = 0.6 * s;
+    const cov = document.createElement("div"); cov.className = "blk-cover";
+    if (b.kind === "orig") {
+      cov.style.cssText = "left:" + (-pad) + "px;top:" + (-b.ascent * b.size * s - pad) + "px;width:" + (b.width * s + 2 * pad) +
+        "px;height:" + ((b.ascent + b.descent) * b.size * s + 2 * pad) + "px";
+      cov.addEventListener("pointerdown", e => { if (S.tool !== "edit") return; e.stopPropagation(); e.preventDefault(); select(pg, b); focusEnd(b.txtEl); });
+    } else cov.style.display = "none";
+    const txt = document.createElement("div"); txt.className = "blk-text";
+    txt.contentEditable = "true"; txt.spellcheck = false; txt.setAttribute("role", "textbox");
+    txt.setAttribute("aria-label", b.kind === "new" ? "Added text" : "Line of text from the PDF");
+    const W = b.width * s;
+    const pos = b.align === "right" ? "left:auto;right:" + (-W) + "px;text-align:right;"
+      : b.align === "center" ? "left:" + (W / 2) + "px;transform:translateX(-50%);text-align:center;" : "";
+    txt.style.cssText = pos + "top:" + (-fa) + "px;font:" + cssFont(b, px) + ";line-height:" + (fa + fd) + "px;height:" + (fa + fd) + "px;" +
+      (b.kind === "orig" ? "min-width:" + (b.width * s) + "px" : "");
+    txt.textContent = b.text;
+    txt.addEventListener("pointerdown", e => { if (S.tool !== "edit") return; e.stopPropagation(); select(pg, b); });
+    txt.addEventListener("focus", () => { if (S.tool === "edit") select(pg, b); });
+    txt.addEventListener("input", () => { b.text = txt.textContent.replace(/[\r\n]/g, "").replace(/ /g, " "); applyState(b); updateCount(); });
+    txt.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); txt.blur(); deselect(); } });
+    txt.addEventListener("paste", e => {
+      e.preventDefault();
+      const t = ((e.clipboardData || window.clipboardData).getData("text") || "").replace(/\s*[\r\n]+\s*/g, " ");
+      document.execCommand("insertText", false, t);
+    });
+    const grip = document.createElement("div"); grip.className = "grip"; grip.title = "Drag to move";
+    grip.style.cssText = "left:-22px;top:" + (-fa) + "px";
+    grip.addEventListener("pointerdown", e => { e.stopPropagation(); e.preventDefault(); startDrag(e, pg, b, el); });
+    el.append(cov, txt, grip); b.txtEl = txt; b.covEl = cov;
+  }
+  b.el = el; pg.layer.append(el); applyState(b);
+}
+function applyState(b) {
+  const el = b.el; if (!el) return;
+  const sel = !!S.sel && S.sel.b === b, ch = changed(b);
+  el.classList.toggle("sel", sel); el.classList.toggle("changed", ch);
+  if (b.kind === "cover") { el.style.background = css(b.bg); return; }
+  const on = sel || ch; el.classList.toggle("on", on);
+  if (on) {
+    b.txtEl.style.color = css(b.color || [0, 0, 0]);
+    if (b.kind === "orig") b.covEl.style.background = css(b.bg || [255, 255, 255]);
+  }
+}
+function focusEnd(el) {
+  el.focus();
+  const r = document.createRange(); r.selectNodeContents(el); r.collapse(false);
+  const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+}
+function select(pg, b) {
+  if (S.sel && S.sel.b === b) return;
+  if (S.sel) deselect();
+  if (b.kind === "orig" && !b.color) sampleBlock(pg, b);
+  S.sel = { pg, b }; applyState(b); syncBar();
+}
+function deselect() {
+  if (!S.sel) return;
+  const { pg, b } = S.sel; S.sel = null;
+  if (b.kind === "new" && !b.text.trim()) removeBlock(pg, b); else applyState(b);
+  syncBar(); updateCount();
+}
+function removeBlock(pg, b) {
+  if (b.el) b.el.remove(); b.el = null;
+  pg.blocks = pg.blocks.filter(x => x !== b);
+}
+function startDrag(e, pg, b, el) {
+  const vp = viewOf(pg), x0 = b.x, y0 = b.y, sx = e.clientX, sy = e.clientY;
+  const base = vp.convertToPdfPoint(0, 0), l0 = parseFloat(el.style.left), t0 = parseFloat(el.style.top);
+  const move = ev => {
+    const dx = ev.clientX - sx, dy = ev.clientY - sy, q = vp.convertToPdfPoint(dx, dy);
+    b.x = x0 + q[0] - base[0]; b.y = y0 + q[1] - base[1];
+    el.style.left = (l0 + dx) + "px"; el.style.top = (t0 + dy) + "px";
+  };
+  const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", up); };
+  window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); window.addEventListener("pointercancel", up);
+}
+
+/* ---------- clicking on the page itself ---------- */
+function onLayerDown(e, pg) {
+  if (!pg.rendered) return;
+  const rect = pg.paper.getBoundingClientRect(), vp = viewOf(pg);
+  const vx = e.clientX - rect.left, vy = e.clientY - rect.top;
+  if (S.tool === "edit") { if (e.target === pg.layer) { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); deselect(); } return; }
+  e.preventDefault();
+  if (S.tool === "add") {
+    deselect();
+    const size = S.lastSize, q = vp.convertToPdfPoint(vx, vy + 0.35 * size * S.scale);
+    const b = { id: ++uid, kind: "new", x: q[0], y: q[1], angle: vp.rotation * Math.PI / 180, size, width: 0, text: "",
+                family: "sans", bold: false, italic: false, align: "left", ascent: 0.9, descent: 0.22, color: [0, 0, 0], bg: null };
+    pg.blocks.push(b); drawBlock(pg, b); setTool("edit"); select(pg, b);
+    focusEnd(b.txtEl);
+    setTimeout(() => { if (b.txtEl && document.activeElement !== b.txtEl) focusEnd(b.txtEl); }, 0);
+    return;
+  }
+  if (S.tool === "cover") {
+    const box = document.createElement("div"); box.className = "rubber"; pg.layer.append(box);
+    let cx = vx, cy = vy;
+    const paint = () => { box.style.left = Math.min(vx, cx) + "px"; box.style.top = Math.min(vy, cy) + "px"; box.style.width = Math.abs(cx - vx) + "px"; box.style.height = Math.abs(cy - vy) + "px"; };
+    paint();
+    const move = ev => { cx = clamp(ev.clientX - rect.left, 0, rect.width); cy = clamp(ev.clientY - rect.top, 0, rect.height); paint(); };
+    const up = () => {
+      window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", up);
+      box.remove();
+      if (Math.abs(cx - vx) < 4 || Math.abs(cy - vy) < 4) { toast("Drag a box over the area you want to cover."); return; }
+      const a = vp.convertToPdfPoint(vx, vy), c = vp.convertToPdfPoint(cx, cy);
+      const r = sampleCanvas(pg, Math.min(vx, cx) * pg.k, Math.min(vy, cy) * pg.k, Math.max(vx, cx) * pg.k, Math.max(vy, cy) * pg.k);
+      const b = { id: ++uid, kind: "cover", x: Math.min(a[0], c[0]), y: Math.min(a[1], c[1]), w: Math.abs(c[0] - a[0]), h: Math.abs(c[1] - a[1]), bg: r.bg };
+      pg.blocks.push(b); drawBlock(pg, b); setTool("edit"); select(pg, b); updateCount();
+    };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); window.addEventListener("pointercancel", up);
+  }
+}
+desk.addEventListener("pointerdown", e => { if (e.target === desk || e.target === pagesEl || e.target.classList.contains("sheet")) deselect(); });
+
+/* ---------- toolbar ---------- */
+function setTool(t) {
+  if (t !== "edit") deselect();
+  S.tool = t; pagesEl.dataset.tool = t;
+  $("toolEdit").setAttribute("aria-pressed", t === "edit");
+  $("toolAdd").setAttribute("aria-pressed", t === "add");
+  $("toolCover").setAttribute("aria-pressed", t === "cover");
+}
+function syncBar() {
+  const b = S.sel && S.sel.b, text = !!b && b.kind !== "cover";
+  $("fFamily").disabled = $("fSize").disabled = $("fBold").disabled = $("fItalic").disabled = !text;
+  for (const [id, v] of [["aLeft", "left"], ["aCenter", "center"], ["aRight", "right"]]) { $(id).disabled = !text; $(id).setAttribute("aria-pressed", text && (b.align || "left") === v); }
+  $("fColor").disabled = $("fReset").disabled = !b;
+  $("fReset").textContent = b && b.kind !== "orig" ? "Delete" : "Undo this edit";
+  if (text) {
+    $("fFamily").value = b.family; $("fSize").value = Math.round(b.size * 10) / 10;
+    $("fBold").setAttribute("aria-pressed", !!b.bold); $("fItalic").setAttribute("aria-pressed", !!b.italic);
+    $("fColor").value = toHex(b.color || [0, 0, 0]);
+  } else {
+    $("fBold").setAttribute("aria-pressed", false); $("fItalic").setAttribute("aria-pressed", false);
+    if (b) $("fColor").value = toHex(b.bg);
+  }
+}
+function restyle(fn) {
+  if (!S.sel) return;
+  const { pg, b } = S.sel; fn(b);
+  if (b.kind === "orig") b.styled = true;
+  drawBlock(pg, b); syncBar(); updateCount();
+}
+function updateCount() {
+  let n = 0; for (const pg of S.pages) for (const b of pg.blocks) if (changed(b)) n++;
+  const c = $("count"); c.textContent = n ? n + (n === 1 ? " change" : " changes") : "No changes yet"; c.classList.toggle("has", n > 0);
+}
+for (const [id, v] of [["aLeft", "left"], ["aCenter", "center"], ["aRight", "right"]]) {
+  $(id).addEventListener("mousedown", e => e.preventDefault());
+  $(id).onclick = () => restyle(b => { b.align = v; });
+}
+for (const id of ["fBold", "fItalic", "fReset"]) $(id).addEventListener("mousedown", e => e.preventDefault());
+$("toolEdit").onclick = () => setTool("edit");
+$("toolAdd").onclick = () => setTool(S.tool === "add" ? "edit" : "add");
+$("toolCover").onclick = () => setTool(S.tool === "cover" ? "edit" : "cover");
+$("fFamily").onchange = e => restyle(b => { b.family = e.target.value; });
+$("fSize").onchange = e => { const v = clamp(parseFloat(e.target.value) || 12, 4, 200); restyle(b => { b.size = v; b.noFit = true; S.lastSize = v; }); };
+$("fBold").onclick = () => restyle(b => { b.bold = !b.bold; });
+$("fItalic").onclick = () => restyle(b => { b.italic = !b.italic; });
+$("fColor").oninput = e => restyle(b => { if (b.kind === "cover") b.bg = fromHex(e.target.value); else b.color = fromHex(e.target.value); });
+$("fReset").onclick = () => {
+  if (!S.sel) return;
+  const { pg, b } = S.sel;
+  if (b.kind === "orig") {
+    Object.assign(b, b.o); b.text = b.origText; b.styled = false; b.noFit = false; b.color = null;
+    S.sel = null; drawBlock(pg, b);
+  } else { S.sel = null; removeBlock(pg, b); }
+  syncBar(); updateCount();
+};
+document.addEventListener("keydown", e => {
+  if (!S.sel || S.sel.b.kind !== "cover") return;
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); $("fReset").click(); }
+  if (e.key === "Escape") deselect();
+});
+function setScale(v) { S.scale = Math.round(clamp(v, 0.4, 3) * 100) / 100; layoutPages(); }
+$("zIn").onclick = () => setScale(S.scale * 1.2);
+$("zOut").onclick = () => setScale(S.scale / 1.2);
+
+/* ---------- file in ---------- */
+async function openFile(f) {
+  if (!f) return;
+  if (!/\.pdf$/i.test(f.name) && f.type !== "application/pdf") { toast("That is not a PDF. Choose a file that ends in .pdf."); return; }
+  const bytes = new Uint8Array(await f.arrayBuffer());
+  await openBytes(bytes, f.name, false);
+}
+$("openBtn").onclick = () => $("file").click();
+$("file").onchange = e => { openFile(e.target.files[0]); e.target.value = ""; };
+desk.addEventListener("dragover", e => { e.preventDefault(); desk.classList.add("drop"); });
+desk.addEventListener("dragleave", e => { if (e.target === desk) desk.classList.remove("drop"); });
+desk.addEventListener("drop", e => { e.preventDefault(); desk.classList.remove("drop"); openFile(e.dataTransfer.files[0]); });
+
+/* ---------- writing the edited PDF ---------- */
+async function rasterText(doc, b, size) {
+  let k = 4; const cv = document.createElement("canvas"), c = cv.getContext("2d");
+  c.font = cssFont(b, size * k); let m = c.measureText(b.text);
+  if (m.width > 6000) { k = k * 6000 / m.width; c.font = cssFont(b, size * k); m = c.measureText(b.text); }
+  const fa = m.fontBoundingBoxAscent || size * k * 0.9, fd = m.fontBoundingBoxDescent || size * k * 0.25;
+  cv.width = Math.ceil(m.width) + 2; cv.height = Math.ceil(fa + fd);
+  c.font = cssFont(b, size * k); c.fillStyle = css(b.color); c.textBaseline = "alphabetic"; c.fillText(b.text, 0, fa);
+  const blob = await new Promise(r => cv.toBlob(r, "image/png"));
+  const img = await doc.embedPng(await blob.arrayBuffer());
+  return { img, w: cv.width / k, h: cv.height / k, below: (cv.height - fa) / k };
+}
+async function buildPdf() {
+  const { PDFDocument, rgb, degrees } = PDFLib;
+  const doc = await PDFDocument.load(S.bytes, { ignoreEncryption: true });
+  if (doc.isEncrypted) return { bytes: await buildFlat(), flat: true };
+  const pages = doc.getPages(), fonts = {};
+  const col = c => rgb(c[0] / 255, c[1] / 255, c[2] / 255);
+  const fontFor = async b => { const key = STD[b.family][(b.bold ? 1 : 0) + (b.italic ? 2 : 0)]; return fonts[key] || (fonts[key] = await doc.embedFont(key)); };
+  for (const pg of S.pages) {
+    const page = pages[pg.i], list = pg.blocks.filter(changed);
+    if (!page || !list.length) continue;
+    for (const b of list) {
+      if (b.kind === "cover") page.drawRectangle({ x: b.x, y: b.y, width: b.w, height: b.h, color: col(b.bg) });
+      else if (b.kind === "orig") {
+        const pad = 0.6, cs = Math.cos(b.angle), sn = Math.sin(b.angle), D = b.descent * b.size + pad;
+        page.drawRectangle({ x: b.x - cs * pad + sn * D, y: b.y - sn * pad - cs * D, width: b.width + 2 * pad,
+          height: (b.ascent + b.descent) * b.size + 2 * pad, rotate: degrees(b.angle * 180 / Math.PI), color: col(b.bg || [255, 255, 255]) });
+      }
+    }
+    for (const b of list) {
+      if (b.kind === "cover" || !b.text.trim()) continue;
+      const font = await fontFor(b), rot = degrees(b.angle * 180 / Math.PI), color = b.color || [0, 0, 0];
+      let ok = true; try { font.encodeText(b.text); } catch (e) { ok = false; }
+      if (ok) {
+        let size = b.size;
+        if (b.kind === "orig" && !b.noFit) { try { const w = font.widthOfTextAtSize(b.origText, size); if (w) size *= clamp(b.width / w, 0.8, 1.25); } catch (e) {} }
+        const off = alignOff(b, font.widthOfTextAtSize(b.text, size)), cs = Math.cos(b.angle), sn = Math.sin(b.angle);
+        page.drawText(b.text, { x: b.x + cs * off, y: b.y + sn * off, size, font, color: col(color), rotate: rot });
+      } else {
+        const r = await rasterText(doc, Object.assign({}, b, { color }), b.size * fitOf(b));
+        const cs = Math.cos(b.angle), sn = Math.sin(b.angle), off = alignOff(b, r.w);
+        page.drawImage(r.img, { x: b.x + cs * off + sn * r.below, y: b.y + sn * off - cs * r.below, width: r.w, height: r.h, rotate: rot });
+      }
+    }
+  }
+  const bytes = await doc.save({ useObjectStreams: false });
+  try {
+    const chk = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+    await chk.getPage(1); chk.destroy();
+  } catch (e) { return { bytes: await buildFlat(), flat: true }; }
+  return { bytes, flat: false };
+}
+/* Protected or damaged files cannot be rewritten in place: save each page as a picture with the edits drawn on. */
+async function buildFlat() {
+  const out = await PDFLib.PDFDocument.create();
+  for (const pg of S.pages) {
+    const v1 = pg.page.getViewport({ scale: 1 });
+    let k = 2; if (v1.width * v1.height * k * k > 16e6) k = Math.sqrt(16e6 / (v1.width * v1.height));
+    const vp = pg.page.getViewport({ scale: k }), cv = document.createElement("canvas");
+    cv.width = Math.max(1, Math.round(vp.width)); cv.height = Math.max(1, Math.round(vp.height));
+    const c = cv.getContext("2d");
+    c.fillStyle = "#fff"; c.fillRect(0, 0, cv.width, cv.height);
+    await pg.page.render({ canvasContext: c, viewport: vp }).promise;
+    const list = pg.blocks.filter(changed), t = vp.transform;
+    c.setTransform(t[0], t[1], t[2], t[3], t[4], t[5]);
+    for (const b of list) {
+      c.fillStyle = css(b.bg || [255, 255, 255]);
+      if (b.kind === "cover") c.fillRect(b.x, b.y, b.w, b.h);
+      else if (b.kind === "orig") {
+        const pad = 0.6; c.save(); c.translate(b.x, b.y); c.rotate(b.angle);
+        c.fillRect(-pad, -b.descent * b.size - pad, b.width + 2 * pad, (b.ascent + b.descent) * b.size + 2 * pad); c.restore();
+      }
+    }
+    for (const b of list) {
+      if (b.kind === "cover" || !b.text.trim()) continue;
+      c.save(); c.translate(b.x, b.y); c.rotate(b.angle); c.scale(1, -1);
+      c.font = cssFont(b, b.size * fitOf(b)); c.fillStyle = css(b.color || [0, 0, 0]); c.textBaseline = "alphabetic";
+      c.fillText(b.text, alignOff(b, c.measureText(b.text).width), 0); c.restore();
+    }
+    const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.92));
+    const img = await out.embedJpg(await blob.arrayBuffer());
+    out.addPage([v1.width, v1.height]).drawImage(img, { x: 0, y: 0, width: v1.width, height: v1.height });
+  }
+  return await out.save({ useObjectStreams: false });
+}
+$("saveBtn").onclick = async () => {
+  if (!S.bytes) return;
+  deselect();
+  const btn = $("saveBtn"); btn.disabled = true; btn.textContent = "Preparing…";
+  try {
+    let bytes, flat = false;
+    try { const r = await buildPdf(); bytes = r.bytes; flat = r.flat; }
+    catch (e) { toast("The edited PDF could not be built: " + (e && e.message ? e.message : "unknown error") + "."); return; }
+    const name = (S.name.replace(/\.pdf$/i, "") || "document") + "-edited.pdf";
+    const blob = new Blob([bytes], { type: "application/pdf" });
+    let dl = null;
+    try { if (window.claude && window.claude.use) dl = await window.claude.use("downloads"); } catch (e) {}
+    const done = flat ? " This PDF is protected, so its pages were saved as pictures: the text in the saved copy cannot be selected." : "";
+    if (!bytes || bytes.length < 200) { toast("The edited PDF came out empty. Reload the page and try again."); return; }
+    if (dl) {
+      try { await dl.save({ filename: name, data: bytes.slice() }); toast("Saved " + name + "." + done, flat ? 9000 : 0); }
+      catch (e) { toast(e && e.code === "declined" ? "Download cancelled. Your edits are still here." : "The download did not go through. Try again in a moment."); }
+    } else {
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+      document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+      toast("Download started: " + name + "." + done, flat ? 9000 : 0);
+    }
+  } finally { btn.disabled = false; btn.textContent = "Download PDF"; }
+};
+
+/* ---------- example file shown on first load ---------- */
+async function makeSample() {
+  const { PDFDocument, StandardFonts, rgb } = PDFLib;
+  const d = await PDFDocument.create(), p = d.addPage([595.28, 841.89]);
+  const H = await d.embedFont(StandardFonts.Helvetica), HB = await d.embedFont(StandardFonts.HelveticaBold);
+  const T = await d.embedFont(StandardFonts.TimesRoman), TI = await d.embedFont(StandardFonts.TimesRomanItalic);
+  const ink = rgb(0.1, 0.13, 0.17), grey = rgb(0.4, 0.44, 0.5), navy = rgb(0.09, 0.2, 0.42);
+  let y = 770; const L = 64;
+  const line = (t, f, s, c, gap) => { p.drawText(t, { x: L, y, size: s, font: f, color: c || ink }); y -= gap || s * 1.5; };
+  line("Lift Maintenance Notice", HB, 24, navy, 30);
+  line("Example file for the PDF Text Editor", H, 10, grey, 34);
+  line("Date: 12 November 2026", H, 11, ink, 17);
+  line("Reference: MN-2026-041", H, 11, ink, 34);
+  line("Dear residents,", T, 13, ink, 24);
+  line("The lift in Block B will be serviced on Saturday, 21 November,", T, 13, ink, 19);
+  line("between 10:00 and 13:00. Please use the stairs or the Block A lift", T, 13, ink, 19);
+  line("during this time. Deliveries can be left at the security desk.", T, 13, ink, 34);
+  p.drawRectangle({ x: L, y: y - 12, width: 467, height: 34, color: navy }); y -= 0;
+  p.drawText("Need help on the day? Ask at the facilities desk, ground floor.", { x: L + 14, y: y, size: 12, font: HB, color: rgb(1, 1, 1) });
+  y -= 52;
+  line("Schedule", HB, 13, navy, 22);
+  const rows = [["Lift", "Day", "Time"], ["Block B, lift 1", "Saturday", "10:00 to 11:30"], ["Block B, lift 2", "Saturday", "11:30 to 13:00"]];
+  rows.forEach((r, i) => {
+    const f = i ? H : HB;
+    p.drawText(r[0], { x: L, y, size: 11, font: f, color: ink });
+    p.drawText(r[1], { x: L + 190, y, size: 11, font: f, color: ink });
+    p.drawText(r[2], { x: L + 320, y, size: 11, font: f, color: ink });
+    p.drawLine({ start: { x: L, y: y - 7 }, end: { x: L + 467, y: y - 7 }, thickness: 0.5, color: rgb(0.78, 0.8, 0.84) });
+    y -= 24;
+  });
+  y -= 16;
+  line("Thank you for your patience.", TI, 13, ink, 30);
+  line("Building Management Office", HB, 11, ink, 16);
+  return await d.save();
+}
+
+(async function start() {
+  if (!libsOk) { $("tip").textContent = "The editor could not load its PDF libraries. Check your connection and reload the page."; return; }
+  syncBar();
+  try { await openBytes(await makeSample(), "example.pdf", true); }
+  catch (e) { $("tip").textContent = "Open a PDF to start editing its text."; }
+})();
+</script>
+</body>
+</html>
